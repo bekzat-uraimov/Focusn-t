@@ -1,83 +1,64 @@
-@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Inter:wght@400;500;600&display=swap');
-@import "tailwindcss";
-
-@theme {
-  /* Fonts */
-  --font-display: 'Nunito', sans-serif;
-  --font-body:    'Inter', sans-serif;
-
-  /* Duck palette */
-  --color-duck-yellow:  #FFD166;
-  --color-duck-orange:  #F4845F;
-  --color-duck-dark:    #C77B3B;
-
-  /* Sky */
-  --color-sky-deep:   #0f0c29;
-  --color-sky-mid:    #302b63;
-  --color-sky-light:  #24243e;
-
-  /* Rarity */
-  --color-common:    #94a3b8;
-  --color-rare:      #60a5fa;
-  --color-epic:      #c084fc;
-  --color-legendary: #fb923c;
-  --color-mythic:    #f472b6;
-
-  /* Animations */
-  --animate-float:      float 3s ease-in-out infinite;
-  --animate-bob:        bob 2s ease-in-out infinite;
-  --animate-drift:      drift 6s ease-in-out infinite;
-  --animate-pulse-glow: pulseGlow 2s ease-in-out infinite;
-  --animate-sparkle:    sparkle 1.5s ease-in-out infinite;
-  --animate-spin-slow:  spin 8s linear infinite;
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
 }
 
-* { box-sizing: border-box; }
-
-body {
-  background: #0f0c29;
-  color: #f8f9fa;
-  font-family: 'Inter', sans-serif;
-  overflow-x: hidden;
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #03030a;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Display", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
-
-.glass {
-  background: rgba(255,255,255,0.06);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255,255,255,0.12);
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
 }
 
-.glass-strong {
-  background: rgba(255,255,255,0.10);
-  backdrop-filter: blur(30px);
-  -webkit-backdrop-filter: blur(30px);
-  border: 1px solid rgba(255,255,255,0.18);
+@keyframes float-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-.text-gradient {
-  background: linear-gradient(135deg, #FFD166, #F4845F);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+@keyframes slide-up {
+  from { opacity: 0; transform: translate(-50%, 12px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
 }
 
-.text-gradient-blue {
-  background: linear-gradient(135deg, #60a5fa, #c084fc);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+@keyframes vignette-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 0.85; }
 }
 
-@keyframes float    { 0%,100%{transform:translateY(0)}      50%{transform:translateY(-14px)} }
-@keyframes bob      { 0%,100%{transform:translateY(0) rotate(0deg)} 50%{transform:translateY(-6px) rotate(2deg)} }
-@keyframes drift    { 0%,100%{transform:translateX(0)}       50%{transform:translateX(12px)} }
-@keyframes pulseGlow{ 0%,100%{opacity:1}                     50%{opacity:0.55} }
-@keyframes sparkle  { 0%,100%{transform:scale(1);opacity:1}  50%{transform:scale(1.3);opacity:0.7} }
-@keyframes shake    { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-6px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(4px)} }
-@keyframes popIn    { 0%{transform:scale(0.6);opacity:0} 70%{transform:scale(1.1)} 100%{transform:scale(1);opacity:1} }
-@keyframes twinkle  { 0%,100%{opacity:0.3;transform:scale(1)} 50%{opacity:1;transform:scale(1.3)} }
+@keyframes countdown-pulse {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+  50% { transform: translate(-50%, -50%) scale(1.04); opacity: 0.9; }
+}
+
+.focus-btn {
+  transition: background 0.2s, box-shadow 0.2s, transform 0.1s;
+}
+.focus-btn:hover {
+  background: linear-gradient(135deg, rgba(99,102,241,0.32), rgba(139,92,246,0.25)) !important;
+  box-shadow: 0 0 32px rgba(99,102,241,0.25) !important;
+}
+.focus-btn:active { transform: scale(0.98); }
+
+.giveup-btn { transition: background 0.2s, border-color 0.2s, transform 0.1s; }
+.giveup-btn:hover { background: rgba(239,68,68,0.14) !important; border-color: rgba(239,68,68,0.5) !important; }
+.giveup-btn:active { transform: scale(0.98); }
+
+.reset-btn { transition: background 0.2s, transform 0.1s; }
+.reset-btn:hover { background: rgba(255,255,255,0.09) !important; }
+.reset-btn:active { transform: scale(0.98); }
+
+.duration-btn { transition: background 0.15s, color 0.15s; cursor: pointer; }
+.duration-btn:hover { background: rgba(255,255,255,0.08) !important; color: rgba(255,255,255,0.8) !important; }
+
+.hud-enter {
+  animation: float-in 0.4s cubic-bezier(0.16,1,0.3,1) both;
+}

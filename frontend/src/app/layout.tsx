@@ -2,14 +2,14 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "FocusDuck — Focus Together. Grow Your Flock.",
-  description: "AI-powered focus sessions with friends. Your duck evolves as you study.",
+  title: "focusn't",
+  description: "Focus sessions that build your galaxy",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="h-full">
-      <body className="min-h-full antialiased">{children}</body>
+    <html lang="en">
+      <body>{children}</body>
     </html>
   );
 }
