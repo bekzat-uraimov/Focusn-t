@@ -8,6 +8,7 @@ class RoomCreate(BaseModel):
     name: str
     is_open: bool = True
     scheduled_at: datetime | None = None
+    scheduled_duration_secs: int | None = None
 
 
 class RoomJoin(BaseModel):
@@ -29,6 +30,7 @@ class RoomOut(BaseModel):
     invite_code: str
     is_open: bool
     scheduled_at: datetime | None
+    scheduled_duration_secs: int | None
     created_at: datetime
     members: list[MemberOut] = []
 
@@ -40,6 +42,7 @@ class RoomListItem(BaseModel):
     name: str
     is_open: bool
     scheduled_at: datetime | None
+    scheduled_duration_secs: int | None
     member_count: int
 
     model_config = {"from_attributes": True}

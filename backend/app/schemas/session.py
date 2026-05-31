@@ -20,7 +20,7 @@ class SessionCreate(BaseModel):
 
 
 class SessionEnd(BaseModel):
-    status: Literal["completed", "failed"]
+    status: Literal["completed", "failed", "abandoned"]
     elapsed_secs: int
 
 

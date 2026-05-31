@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,24 @@ from app.schemas.session import SessionCreate, SessionEnd, SessionOut
 from app.ws.room_manager import manager
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+
+
+@router.get("/current", response_model=SessionOut)
+async def get_current_session(
+    room_id: UUID = Query(...),
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    session = await db.scalar(
+        select(Session).where(
+            Session.user_id == user.id,
+            Session.room_id == room_id,
+            Session.status.in_(["in_progress", "scheduled"]),
+        )
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="No active session")
+    return SessionOut.model_validate(session)
 
 
 @router.post("", response_model=SessionOut, status_code=status.HTTP_201_CREATED)
@@ -86,7 +105,11 @@ async def end_session(
 
     if body.status == "completed":
         tree.in_forest = True
-    else:
+    elif body.status == "abandoned":
+        tree.is_alive = False
+        tree.in_forest = True
+        tree.died_at = datetime.now(timezone.utc)
+    else:  # failed
         tree.is_alive = False
         tree.died_at = datetime.now(timezone.utc)
 

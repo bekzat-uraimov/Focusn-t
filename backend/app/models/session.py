@@ -19,7 +19,7 @@ class Session(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(
-        Enum("in_progress", "completed", "failed", name="session_status"),
+        Enum("in_progress", "completed", "failed", "abandoned", "scheduled", name="session_status"),
         default="in_progress",
         nullable=False,
     )

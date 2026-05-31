@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from uuid import UUID
 
 import jwt
@@ -8,6 +9,7 @@ from sqlalchemy import select
 from app.core.security import decode_token
 from app.db import SessionLocal
 from app.models.session import Session
+from app.models.tree import Tree, elapsed_to_stage
 from app.models.user import User
 from app.ws.room_manager import manager
 
@@ -65,3 +67,40 @@ async def room_websocket(room_id: str, websocket: WebSocket, token: str = Query(
             room_id,
             {"type": "member_left", "user_id": user_id},
         )
+
+        # Auto-end any in_progress session for this user in this room
+        async with SessionLocal() as db:
+            session = await db.scalar(
+                select(Session).where(
+                    Session.user_id == UUID(user_id),
+                    Session.room_id == UUID(room_id),
+                    Session.status == "in_progress",
+                )
+            )
+            if session:
+                now = datetime.now(timezone.utc)
+                elapsed = int((now - session.started_at.replace(tzinfo=timezone.utc)).total_seconds())
+                session.status = "abandoned"
+                session.ended_at = now
+
+                tree = await db.scalar(select(Tree).where(Tree.session_id == session.id))
+                if tree:
+                    tree.stage = elapsed_to_stage(elapsed, session.duration_secs)
+                    tree.is_alive = False
+                    tree.in_forest = True
+                    tree.died_at = now
+
+                await db.commit()
+                await db.refresh(session)
+
+                await manager.broadcast(
+                    room_id,
+                    {
+                        "type": "session_end",
+                        "user_id": user_id,
+                        "status": "abandoned",
+                        "tree_alive": False,
+                        "tree_type": tree.tree_type if tree else "common",
+                        "in_forest": True,
+                    },
+                )
