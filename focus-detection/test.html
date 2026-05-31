@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>FocusForest — Detection Test</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f1117; color: #e2e8f0; font-family: monospace; display: flex; gap: 24px; padding: 24px; }
+    video { width: 480px; height: 360px; border-radius: 8px; transform: scaleX(-1); }
+    canvas { position: absolute; top: 0; left: 0; width: 480px; height: 360px; transform: scaleX(-1); pointer-events: none; }
+    .video-wrap { position: relative; flex-shrink: 0; }
+    .panel { display: flex; flex-direction: column; gap: 12px; min-width: 300px; }
+    .status-box { padding: 16px; border-radius: 8px; font-size: 1.3rem; font-weight: bold; text-align: center; transition: background 0.3s; }
+    .status-focused     { background: #14532d; color: #86efac; }
+    .status-questionable{ background: #713f12; color: #fde68a; }
+    .status-distracted  { background: #7f1d1d; color: #fca5a5; }
+    .status-away        { background: #1e1b4b; color: #a5b4fc; }
+    .status-recovering  { background: #164e63; color: #67e8f9; }
+    .countdown { font-size: 2.5rem; text-align: center; font-weight: bold; }
+    .countdown.questionable-cd { color: #fde68a; }
+    .countdown.distracted-cd   { color: #f87171; }
+    .countdown.recovery-cd     { color: #67e8f9; }
+    .metrics { background: #1e2130; border-radius: 8px; padding: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .metric-label { color: #64748b; font-size: 0.75rem; align-self: center; }
+    .metric-value { font-size: 0.95rem; color: #94a3b8; }
+    .metric-value.warn { color: #fbbf24; }
+    .metric-value.bad  { color: #f87171; }
+    .mode-toggle { display: flex; gap: 8px; }
+    button { flex: 1; padding: 8px; border-radius: 6px; border: none; cursor: pointer; font-family: monospace; font-size: 0.85rem; background: #1e2130; color: #94a3b8; }
+    button.active { background: #3b82f6; color: white; }
+    .slider-row { background: #1e2130; border-radius: 8px; padding: 10px 12px; }
+    .slider-row label { color: #64748b; font-size: 0.75rem; display: flex; justify-content: space-between; margin-bottom: 6px; }
+    input[type=range] { width: 100%; accent-color: #3b82f6; }
+    .thresholds { background: #1e2130; border-radius: 8px; padding: 10px 12px; font-size: 0.75rem; color: #64748b; }
+    .thresholds h3 { color: #94a3b8; margin-bottom: 6px; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .thresh-row { display: flex; justify-content: space-between; margin-bottom: 3px; }
+    .log { background: #1e2130; border-radius: 8px; padding: 10px; font-size: 0.72rem; height: 140px; overflow-y: auto; color: #64748b; }
+    .log-entry { margin-bottom: 3px; }
+    .log-entry.warn  { color: #fbbf24; }
+    .log-entry.error { color: #f87171; }
+    .log-entry.ok    { color: #86efac; }
+    .log-entry.info  { color: #67e8f9; }
+  </style>
+</head>
+<body>
+
+<div class="video-wrap">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+</div>
+
+<div class="panel">
+  <div class="mode-toggle">
+    <button id="btn-coding" class="active" onclick="setMode('coding')">💻 Coding</button>
+    <button id="btn-writing" onclick="setMode('writing')">✏️ Writing</button>
+  </div>
+
+  <div id="status-box" class="status-box status-focused">FOCUSED ✓</div>
+  <div id="countdown" class="countdown" style="display:none"></div>
+
+  <!-- Writing-mode pitch slider -->
+  <div class="slider-row" id="pitch-slider-wrap" style="display:none">
+    <label>
+      <span>Looking-down limit (writing)</span>
+      <span id="pitch-limit-val">-40°</span>
+    </label>
+    <input type="range" id="pitch-slider" min="-70" max="-10" value="-40"
+      oninput="updatePitchLimit(this.value)" />
+  </div>
+
+  <div class="metrics">
+    <span class="metric-label">Pitch</span>   <span id="pitch"  class="metric-value">0°</span>
+    <span class="metric-label">Yaw</span>     <span id="yaw"    class="metric-value">0°</span>
+    <span class="metric-label">Face</span>    <span id="face"   class="metric-value">—</span>
+    <span class="metric-label">Hands</span>   <span id="hands"  class="metric-value">—</span>
+    <span class="metric-label">Hand in lap</span> <span id="lap" class="metric-value">—</span>
+    <span class="metric-label">Phone</span>   <span id="phone"  class="metric-value">—</span>
+  </div>
+
+  <div class="thresholds" id="thresh-display"></div>
+  <div class="log" id="log"></div>
+</div>
+
+<script type="module">
+import {
+  FaceLandmarker,
+  HandLandmarker,
+  ObjectDetector,
+  FilesetResolver,
+  DrawingUtils,
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+// ── Thresholds ──────────────────────────────────────────────────────────────
+const THRESHOLDS = {
+  coding: {
+    yawLimit: 25,
+    pitchUpLimit: 20,
+    pitchDownLimit: -25,
+    questionableCountdownSecs: 20,
+    distractedCountdownSecs: 10,
+    awayGraceSecs: 3,
+    recoveryRequiredSecs: 3,
+  },
+  writing: {
+    yawLimit: 30,
+    pitchUpLimit: 20,
+    pitchDownLimit: -40,   // user-adjustable
+    questionableCountdownSecs: 20,
+    distractedCountdownSecs: 10,
+    awayGraceSecs: 3,
+    recoveryRequiredSecs: 3,
+  },
+};
+
+// ── State machine ───────────────────────────────────────────────────────────
+class FocusStateMachine {
+  constructor() { this.reset(); }
+  reset() {
+    this.status = "focused";
+    this.distractionStartMs = null;
+    this.questionableCountdownStartMs = null;
+    this.distractedCountdownStartMs = null;
+    this.recoveryStartMs = null;
+    this.recoveringFrom = null;
+    this.awayStartMs = null;
+  }
+
+  tick({ facePresent, poseDistracted, phoneDetected, handInLap, thresholds, nowMs }) {
+    const s = this;
+
+    // AWAY
+    if (!facePresent) {
+      if (s.awayStartMs === null) s.awayStartMs = nowMs;
+      if ((nowMs - s.awayStartMs) / 1000 >= thresholds.awayGraceSecs) {
+        s.status = "away";
+        s.recoveryStartMs = null;
+        return { status: "away", countdownRemaining: null, recoveryRemaining: null, sessionFailed: false };
+      }
+      return { status: s.status, countdownRemaining: null, recoveryRemaining: null, sessionFailed: false };
+    }
+    s.awayStartMs = null;
+
+    const isDistracted = poseDistracted || phoneDetected || handInLap;
+
+    // RECOVERY
+    if (!isDistracted && (s.status === "questionable" || s.status === "distracted" || s.status === "recovering")) {
+      if (s.recoveryStartMs === null) {
+        s.recoveryStartMs = nowMs;
+        s.recoveringFrom = s.status === "recovering" ? s.recoveringFrom : s.status;
+        s.status = "recovering";
+      }
+      const recoveredFor = (nowMs - s.recoveryStartMs) / 1000;
+      const remaining = Math.max(0, thresholds.recoveryRequiredSecs - recoveredFor);
+      if (remaining === 0) {
+        s.status = "focused";
+        s.distractionStartMs = null;
+        s.questionableCountdownStartMs = null;
+        s.distractedCountdownStartMs = null;
+        s.recoveryStartMs = null;
+        s.recoveringFrom = null;
+        return { status: "focused", countdownRemaining: null, recoveryRemaining: null, sessionFailed: false };
+      }
+      return { status: "recovering", countdownRemaining: null, recoveryRemaining: Math.ceil(remaining), sessionFailed: false };
+    }
+
+    // distraction resumes during recovery
+    if (isDistracted && s.status === "recovering") {
+      s.status = s.recoveringFrom ?? "questionable";
+      s.recoveryStartMs = null;
+    }
+
+    // FOCUSED
+    if (!isDistracted && s.status === "focused") {
+      s.distractionStartMs = null;
+      return { status: "focused", countdownRemaining: null, recoveryRemaining: null, sessionFailed: false };
+    }
+
+    // DISTRACTED
+    if (isDistracted) {
+      if (s.distractionStartMs === null) s.distractionStartMs = nowMs;
+
+      if (s.status === "focused") {
+        s.status = "questionable";
+        s.questionableCountdownStartMs = nowMs;
+      }
+
+      if (s.status === "questionable") {
+        if (s.questionableCountdownStartMs === null) s.questionableCountdownStartMs = nowMs;
+        const elapsed = (nowMs - s.questionableCountdownStartMs) / 1000;
+        const remaining = Math.max(0, thresholds.questionableCountdownSecs - elapsed);
+        if (remaining > 0) {
+          return { status: "questionable", countdownRemaining: Math.ceil(remaining), recoveryRemaining: null, sessionFailed: false };
+        }
+        s.status = "distracted";
+        s.distractedCountdownStartMs = nowMs;
+      }
+
+      if (s.status === "distracted") {
+        if (s.distractedCountdownStartMs === null) s.distractedCountdownStartMs = nowMs;
+        const elapsed = (nowMs - s.distractedCountdownStartMs) / 1000;
+        const remaining = Math.max(0, thresholds.distractedCountdownSecs - elapsed);
+        if (remaining === 0) return { status: "distracted", countdownRemaining: 0, recoveryRemaining: null, sessionFailed: true };
+        return { status: "distracted", countdownRemaining: Math.ceil(remaining), recoveryRemaining: null, sessionFailed: false };
+      }
+    }
+
+    return { status: s.status, countdownRemaining: null, recoveryRemaining: null, sessionFailed: false };
+  }
+}
+
+// ── Head pose ───────────────────────────────────────────────────────────────
+function matrixToEuler(m) {
+  const toDeg = r => r * 180 / Math.PI;
+  const r00 = m[0], r01 = m[4], r02 = m[8], r12 = m[9], r22 = m[10];
+  const pitch = toDeg(Math.atan2(-r12, r22));
+  const yaw   = toDeg(Math.atan2(r02, Math.sqrt(r12**2 + r22**2)));
+  return { pitch, yaw: -yaw };
+}
+
+function extractHeadPose(result) {
+  if (!result.facialTransformationMatrixes?.length)
+    return { pitch: 0, yaw: 0, facePresent: false };
+  const { pitch, yaw } = matrixToEuler(result.facialTransformationMatrixes[0].data);
+  return { pitch, yaw, facePresent: true };
+}
+
+function isPoseDistracted(pose, t) {
+  if (!pose.facePresent) return false;
+  return Math.abs(pose.yaw) > t.yawLimit || pose.pitch > t.pitchUpLimit || pose.pitch < t.pitchDownLimit;
+}
+
+// ── Hand analysis ───────────────────────────────────────────────────────────
+const LAP_Y = 0.70;
+
+function analyzeHands(result, phoneBbox) {
+  if (!result.landmarks?.length)
+    return { handsPresent: false, wristY: null, handInLap: false, handNearPhone: false };
+
+  const wristYValues = result.landmarks.map(h => h[0].y);
+  const maxWristY = Math.max(...wristYValues);
+  const handInLap = maxWristY > LAP_Y;
+
+  let handNearPhone = false;
+  if (phoneBbox) {
+    for (const hand of result.landmarks) {
+      for (const lm of hand) {
+        if (lm.x >= phoneBbox.xMin && lm.x <= phoneBbox.xMax &&
+            lm.y >= phoneBbox.yMin && lm.y <= phoneBbox.yMax) {
+          handNearPhone = true; break;
+        }
+      }
+      if (handNearPhone) break;
+    }
+  }
+
+  return { handsPresent: true, wristY: maxWristY, handInLap, handNearPhone };
+}
+
+// ── DOM refs ────────────────────────────────────────────────────────────────
+const video  = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx    = canvas.getContext("2d");
+
+let mode = "coding";
+let faceLandmarker, handLandmarker, objectDetector, drawingUtils;
+let sm = new FocusStateMachine();
+let prevStatus = "focused";
+let sessionFailed = false;
+let phoneFrameCounter = 0;
+let lastPhoneResult = { detected: false, bbox: null };
+
+window.setMode = function(m) {
+  mode = m;
+  document.getElementById("btn-coding").className  = m === "coding"  ? "active" : "";
+  document.getElementById("btn-writing").className = m === "writing" ? "active" : "";
+  document.getElementById("pitch-slider-wrap").style.display = m === "writing" ? "block" : "none";
+  sm.reset(); sessionFailed = false;
+  renderThresholds();
+  log(`Mode → ${m}`, "info");
+};
+
+window.updatePitchLimit = function(val) {
+  THRESHOLDS.writing.pitchDownLimit = Number(val);
+  document.getElementById("pitch-limit-val").textContent = `${val}°`;
+  renderThresholds();
+};
+
+function renderThresholds() {
+  const t = THRESHOLDS[mode];
+  document.getElementById("thresh-display").innerHTML = `
+    <h3>Active thresholds (${mode})</h3>
+    <div class="thresh-row"><span>Yaw limit</span><span>±${t.yawLimit}°</span></div>
+    <div class="thresh-row"><span>Pitch up</span><span>${t.pitchUpLimit}°</span></div>
+    <div class="thresh-row"><span>Pitch down</span><span>${t.pitchDownLimit}°</span></div>
+    <div class="thresh-row"><span>Questionable CD</span><span>${t.questionableCountdownSecs}s</span></div>
+    <div class="thresh-row"><span>Distracted CD</span><span>${t.distractedCountdownSecs}s</span></div>
+    <div class="thresh-row"><span>Recovery hold</span><span>${t.recoveryRequiredSecs}s</span></div>
+  `;
+}
+
+const logEl = document.getElementById("log");
+function log(msg, type = "") {
+  const d = document.createElement("div");
+  d.className = `log-entry ${type}`;
+  d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  logEl.prepend(d);
+  if (logEl.children.length > 60) logEl.lastChild.remove();
+}
+
+// ── Init ────────────────────────────────────────────────────────────────────
+async function init() {
+  const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+  video.srcObject = stream;
+  await new Promise(r => video.addEventListener("loadeddata", r, { once: true }));
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  log("Webcam ready", "ok");
+
+  const vision = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+  );
+
+  faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+      delegate: "GPU",
+    },
+    runningMode: "VIDEO", numFaces: 1,
+    outputFacialTransformationMatrixes: true, outputFaceBlendshapes: false,
+  });
+  log("FaceLandmarker ready", "ok");
+
+  try {
+    handLandmarker = await HandLandmarker.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+        delegate: "GPU",
+      },
+      runningMode: "VIDEO", numHands: 2,
+    });
+    log("HandLandmarker ready", "ok");
+  } catch { log("HandLandmarker failed — hand detection disabled", "warn"); }
+
+  try {
+    objectDetector = await ObjectDetector.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite",
+        delegate: "GPU",
+      },
+      runningMode: "VIDEO", scoreThreshold: 0.6, categoryAllowlist: ["cell phone"],
+    });
+    log("ObjectDetector ready (phone detection active)", "ok");
+  } catch { log("ObjectDetector failed — phone detection disabled", "warn"); }
+
+  drawingUtils = new DrawingUtils(ctx);
+  renderThresholds();
+  loop();
+}
+
+// ── Detection loop ──────────────────────────────────────────────────────────
+function loop() {
+  if (video.readyState < 2) { requestAnimationFrame(loop); return; }
+
+  const nowMs = performance.now();
+  const t = THRESHOLDS[mode];
+
+  // Face
+  const faceResult = faceLandmarker.detectForVideo(video, nowMs);
+  const pose = extractHeadPose(faceResult);
+
+  // Phone (every 10 frames)
+  if (objectDetector && ++phoneFrameCounter % 10 === 0) {
+    const r = objectDetector.detectForVideo(video, nowMs);
+    const d = r.detections.find(d => d.categories.some(c => c.categoryName === "cell phone" && c.score >= 0.6));
+    if (!d || !d.boundingBox) {
+      lastPhoneResult = { detected: false, bbox: null };
+    } else {
+      const b = d.boundingBox;
+      const w = video.videoWidth, h = video.videoHeight;
+      lastPhoneResult = { detected: true, bbox: { xMin: b.originX/w, yMin: b.originY/h, xMax: (b.originX+b.width)/w, yMax: (b.originY+b.height)/h } };
+    }
+  }
+
+  // Hands
+  let hands = { handsPresent: false, wristY: null, handInLap: false, handNearPhone: false };
+  if (handLandmarker) {
+    const handResult = handLandmarker.detectForVideo(video, nowMs);
+    hands = analyzeHands(handResult, lastPhoneResult.bbox);
+  }
+
+  // Boost phone confidence if hand is also in the bbox
+  const phoneConfirmed = lastPhoneResult.detected && hands.handNearPhone;
+  const phoneDetected  = phoneConfirmed || lastPhoneResult.detected;
+
+  const poseDistracted = isPoseDistracted(pose, t);
+
+  // Draw face mesh
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (faceResult.faceLandmarks?.length) {
+    for (const lm of faceResult.faceLandmarks) {
+      drawingUtils.drawConnectors(lm, FaceLandmarker.FACE_LANDMARKS_TESSELATION, { color: "#2d6a4f", lineWidth: 1 });
+      drawingUtils.drawConnectors(lm, FaceLandmarker.FACE_LANDMARKS_RIGHT_EYE, { color: "#52b788", lineWidth: 2 });
+      drawingUtils.drawConnectors(lm, FaceLandmarker.FACE_LANDMARKS_LEFT_EYE,  { color: "#52b788", lineWidth: 2 });
+      drawingUtils.drawConnectors(lm, FaceLandmarker.FACE_LANDMARKS_FACE_OVAL, { color: "#40916c", lineWidth: 2 });
+    }
+  }
+
+  if (!sessionFailed) {
+    const out = sm.tick({ facePresent: pose.facePresent, poseDistracted, phoneDetected, handInLap: hands.handInLap, thresholds: t, nowMs });
+
+    if (out.sessionFailed) { sessionFailed = true; log("🌳💀 SESSION FAILED — tree died", "error"); }
+    if (out.status !== prevStatus) {
+      log(`${prevStatus} → ${out.status}`, out.status === "focused" ? "ok" : out.status === "recovering" ? "info" : "warn");
+      prevStatus = out.status;
+    }
+
+    updateUI(out, pose, hands, phoneDetected, phoneConfirmed);
+  }
+
+  requestAnimationFrame(loop);
+}
+
+function updateUI(out, pose, hands, phoneDetected, phoneConfirmed) {
+  const box = document.getElementById("status-box");
+  box.className = `status-box status-${out.status}`;
+  const labels = {
+    focused:      "FOCUSED ✓",
+    questionable: "⚠ QUESTIONABLE",
+    distracted:   "✗ DISTRACTED",
+    away:         "AWAY",
+    recovering:   "↩ RECOVERING",
+  };
+  box.textContent = labels[out.status];
+
+  const cd = document.getElementById("countdown");
+  if (out.recoveryRemaining !== null) {
+    cd.style.display = "block";
+    cd.className = "countdown recovery-cd";
+    cd.textContent = `↩ ${out.recoveryRemaining}s to focus`;
+  } else if (out.countdownRemaining !== null) {
+    cd.style.display = "block";
+    cd.className = `countdown ${out.status === "questionable" ? "questionable-cd" : "distracted-cd"}`;
+    cd.textContent = `${out.countdownRemaining}s`;
+  } else {
+    cd.style.display = "none";
+  }
+
+  const pitchEl = document.getElementById("pitch");
+  pitchEl.textContent = `${pose.pitch.toFixed(1)}°`;
+  pitchEl.className = `metric-value${pose.pitch > 20 || pose.pitch < THRESHOLDS[mode].pitchDownLimit ? " bad" : Math.abs(pose.pitch) > 12 ? " warn" : ""}`;
+
+  const yawEl = document.getElementById("yaw");
+  yawEl.textContent = `${pose.yaw.toFixed(1)}°`;
+  yawEl.className = `metric-value${Math.abs(pose.yaw) > THRESHOLDS[mode].yawLimit ? " bad" : Math.abs(pose.yaw) > 18 ? " warn" : ""}`;
+
+  document.getElementById("face").textContent = pose.facePresent ? "✓" : "✗";
+  document.getElementById("face").className = `metric-value${!pose.facePresent ? " bad" : ""}`;
+
+  document.getElementById("hands").textContent = hands.handsPresent ? `✓ wrist@${hands.wristY?.toFixed(2)}` : "—";
+  document.getElementById("lap").textContent = hands.handInLap ? "⚠ in lap" : "—";
+  document.getElementById("lap").className = `metric-value${hands.handInLap ? " warn" : ""}`;
+
+  const ph = document.getElementById("phone");
+  ph.textContent = phoneConfirmed ? "⚠ confirmed" : phoneDetected ? "⚠ possible" : "—";
+  ph.className = `metric-value${phoneConfirmed ? " bad" : phoneDetected ? " warn" : ""}`;
+}
+
+init().catch(e => { log(`Init error: ${e.message}`, "error"); console.error(e); });
+</script>
+</body>
+</html>
