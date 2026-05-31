@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Focusn't</title>
+  <link rel="stylesheet" href="styles/popup.css">
+</head>
+<body>
+  <main class="popup-shell">
+    <section class="gauge-panel" aria-live="polite">
+      <div class="top-row">
+        <span class="brand">focusn't</span>
+        <span id="connection-dot" class="connection-dot"></span>
+      </div>
+
+      <div class="speedometer" id="speedometer">
+        <svg viewBox="0 0 260 164" role="img" aria-label="Focus percentage">
+          <path class="gauge-track" d="M34 130 A96 96 0 0 1 226 130" pathLength="100"></path>
+          <path id="gauge-fill" class="gauge-fill" d="M34 130 A96 96 0 0 1 226 130" pathLength="100"></path>
+        </svg>
+        <div id="needle" class="needle"></div>
+        <div class="hub"></div>
+      </div>
+
+      <div class="readout">
+        <span id="score-value" class="score-value">--</span>
+        <span class="percent">%</span>
+      </div>
+      <div id="status-label" class="status-label">Waiting for web app</div>
+    </section>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
