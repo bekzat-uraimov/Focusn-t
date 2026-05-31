@@ -50,6 +50,8 @@ export default function Home() {
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const collectedRef = useRef(0);
+  const notificationRef = useRef<Notification | null>(null);
+  const awayTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const stored = localStorage.getItem("focusnt_collected");
@@ -71,16 +73,23 @@ export default function Home() {
     setAttentionScore(100);
     setCountdown(null);
     setWarnings([]);
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
   }, [clearTick]);
 
   const giveUp = useCallback(() => {
     clearTick();
+    notificationRef.current?.close();
+    notificationRef.current = null;
     setSessionState("failed");
     setTimeout(() => { setSessionState("idle"); setElapsed(0); }, 2500);
   }, [clearTick]);
 
   const reset = useCallback(() => {
     clearTick();
+    notificationRef.current?.close();
+    notificationRef.current = null;
     setSessionState("idle");
     setElapsed(0);
   }, [clearTick]);
@@ -102,6 +111,8 @@ export default function Home() {
         const next = prev + 1;
         if (next >= duration) {
           clearTick();
+          notificationRef.current?.close();
+          notificationRef.current = null;
           setSessionState("completed");
           const n = collectedRef.current + 1;
           collectedRef.current = n;
@@ -113,6 +124,80 @@ export default function Home() {
     }, 1000);
     return clearTick;
   }, [sessionState, duration, clearTick]);
+
+  // Notification + beep for distracted AND away states
+  useEffect(() => {
+    if (sessionState !== "running") {
+      notificationRef.current?.close();
+      notificationRef.current = null;
+      return;
+    }
+
+    const isAlert = focusStatus === "distracted" || focusStatus === "away" || focusStatus === "questionable";
+
+    if (isAlert) {
+      if (!notificationRef.current && typeof Notification !== "undefined" && Notification.permission === "granted") {
+        const isAway = focusStatus === "away";
+        const isQuestionable = focusStatus === "questionable";
+        const n = new Notification(
+          isAway ? "⚠️ focusn't — Face not visible"
+          : isQuestionable ? "⚠️ focusn't — Getting distracted"
+          : "⚠️ focusn't — Very distracted",
+          {
+            body: isAway
+              ? "You left your session 🪐 Look at the camera to continue."
+              : isQuestionable
+              ? "Heads up 🪐 Refocus before your session fails."
+              : "Refocus now 🪐 Session fails in 5 seconds.",
+            icon: "/favicon.ico",
+            tag: "focus-alert",
+            requireInteraction: false,
+          }
+        );
+        n.onclick = () => window.focus();
+        notificationRef.current = n;
+
+        try {
+          const ctx = new AudioContext();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(880, ctx.currentTime);
+          osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.25);
+          gain.gain.setValueAtTime(0.4, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+          osc.start(ctx.currentTime);
+          osc.stop(ctx.currentTime + 0.4);
+        } catch {}
+      }
+    } else {
+      notificationRef.current?.close();
+      notificationRef.current = null;
+    }
+  }, [focusStatus, sessionState]);
+
+  // Auto-fail session after 30s of "away" (face not visible)
+  useEffect(() => {
+    if (sessionState !== "running" || focusStatus !== "away") {
+      if (awayTimeoutRef.current) {
+        clearTimeout(awayTimeoutRef.current);
+        awayTimeoutRef.current = null;
+      }
+      return;
+    }
+    awayTimeoutRef.current = setTimeout(() => {
+      awayTimeoutRef.current = null;
+      giveUp();
+    }, 30000);
+    return () => {
+      if (awayTimeoutRef.current) {
+        clearTimeout(awayTimeoutRef.current);
+        awayTimeoutRef.current = null;
+      }
+    };
+  }, [focusStatus, sessionState, giveUp]);
 
   const progress = duration > 0 ? Math.min(elapsed / duration, 1) : 0;
   const remaining = Math.max(0, duration - elapsed);

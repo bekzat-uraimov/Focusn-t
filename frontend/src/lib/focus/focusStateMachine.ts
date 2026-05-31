@@ -60,10 +60,10 @@ export class FocusStateMachine {
     const isDistracted = attentionScore < thresholds.distractedScoreThreshold;
 
     // ── RECOVERY ─────────────────────────────────────────────────────────────
-    if (isGood && (s.status === "questionable" || s.status === "distracted" || s.status === "recovering")) {
+    if (isGood && (s.status === "questionable" || s.status === "distracted" || s.status === "recovering" || s.status === "away")) {
       if (s.recoveryStartMs === null) {
         s.recoveryStartMs = nowMs;
-        s.recoveringFrom = s.status === "recovering" ? s.recoveringFrom : s.status as "questionable" | "distracted";
+        s.recoveringFrom = (s.status === "recovering" || s.status === "away") ? s.recoveringFrom : s.status as "questionable" | "distracted";
         s.status = "recovering";
       }
       const remaining = Math.max(0, thresholds.recoveryRequiredSecs - (nowMs - s.recoveryStartMs) / 1000);

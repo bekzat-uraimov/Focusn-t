@@ -69,14 +69,19 @@ export function useFocusDetection({
   const rafRef = useRef<number>(0);
   const prevStatusRef = useRef<FocusState["status"]>("focused");
   const failedRef = useRef(false);
+  const loopCleanupRef = useRef<(() => void) | null>(null);
 
-  const startLoop = useCallback(() => {
+  const startLoop = useCallback((): (() => void) => {
+    let bgInterval: ReturnType<typeof setInterval> | null = null;
+
     function loop() {
       const video = videoRef.current;
       const landmarker = faceLandmarkerRef.current;
 
       if (!video || !landmarker || video.readyState < 2) {
-        rafRef.current = requestAnimationFrame(loop);
+        if (document.visibilityState === "visible") {
+          rafRef.current = requestAnimationFrame(loop);
+        }
         return;
       }
 
@@ -87,7 +92,6 @@ export function useFocusDetection({
 
       const faceResult: FaceLandmarkerResult = landmarker.detectForVideo(video, nowMs);
 
-      // Expose raw landmarks for mesh drawing (no re-render cost)
       if (landmarksRef) {
         landmarksRef.current = faceResult.faceLandmarks?.length
           ? faceResult.faceLandmarks
@@ -142,10 +146,29 @@ export function useFocusDetection({
         facePresent: pose.facePresent,
       });
 
-      rafRef.current = requestAnimationFrame(loop);
+      // Only self-reschedule via rAF when visible; setInterval drives background
+      if (document.visibilityState === "visible") {
+        rafRef.current = requestAnimationFrame(loop);
+      }
     }
 
+    function handleVisibility() {
+      if (document.visibilityState === "hidden") {
+        cancelAnimationFrame(rafRef.current);
+        bgInterval = setInterval(loop, 800);
+      } else {
+        if (bgInterval !== null) { clearInterval(bgInterval); bgInterval = null; }
+        rafRef.current = requestAnimationFrame(loop);
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibility);
     rafRef.current = requestAnimationFrame(loop);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      if (bgInterval !== null) clearInterval(bgInterval);
+    };
   }, [mode, videoRef, landmarksRef, thresholdOverrides, onSessionFailed, onStatusChange, onScoreChange]);
 
   useEffect(() => {
@@ -175,7 +198,7 @@ export function useFocusDetection({
       stateMachineRef.current.reset();
       resetScorer();
       failedRef.current = false;
-      startLoop();
+      loopCleanupRef.current = startLoop();
     }
 
     setup();
@@ -183,6 +206,8 @@ export function useFocusDetection({
     return () => {
       cancelled = true;
       cancelAnimationFrame(rafRef.current);
+      loopCleanupRef.current?.();
+      loopCleanupRef.current = null;
       faceLandmarkerRef.current?.close();
       faceLandmarkerRef.current = null;
       disposePhoneDetector();
