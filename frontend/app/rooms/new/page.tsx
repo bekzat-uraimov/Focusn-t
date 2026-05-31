@@ -1,20 +1,46 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Copy, Check } from "lucide-react";
+import { ArrowLeft, Copy, Check, Clock } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import DurationPicker from "@/components/room/DurationPicker";
 
+function useLiveClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
+/** Returns "HH:MM" that is `minutesAhead` minutes from now, capped at 23:59. */
+function minTime(minutesAhead = 5): string {
+  const d = new Date(Date.now() + minutesAhead * 60_000);
+  const h = String(d.getHours()).padStart(2, "0");
+  const m = String(d.getMinutes()).padStart(2, "0");
+  return `${h}:${m}`;
+}
+
+/** Combines today's date with a "HH:MM" string into an ISO timestamp. */
+function todayAt(hhmm: string): string {
+  const [h, m] = hhmm.split(":").map(Number);
+  const d = new Date();
+  d.setHours(h, m, 0, 0);
+  return d.toISOString();
+}
+
 export default function NewRoomPage() {
   const { user, loading } = useAuth();
+  const now = useLiveClock();
   const [name, setName] = useState("");
   const [isOpen, setIsOpen] = useState(true);
   const [scheduled, setScheduled] = useState(false);
-  const [scheduledAt, setScheduledAt] = useState("");
+  const [scheduledTime, setScheduledTime] = useState("");  // "HH:MM" for today
   const [scheduledDuration, setScheduledDuration] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<{ id: string; invite_code: string } | null>(null);
@@ -29,20 +55,27 @@ export default function NewRoomPage() {
     e.preventDefault();
     setError("");
 
-    if (scheduled && !scheduledAt) {
-      setError("Please pick a start date and time.");
+    if (scheduled && !scheduledTime) {
+      setError("Please pick a start time.");
       return;
     }
     if (scheduled && !scheduledDuration) {
       setError("Please choose a session duration.");
       return;
     }
+    if (scheduled && scheduledTime) {
+      const chosen = new Date(todayAt(scheduledTime));
+      if (chosen.getTime() <= Date.now() + 4 * 60_000) {
+        setError("Start time must be at least 5 minutes from now.");
+        return;
+      }
+    }
 
     setCreating(true);
     try {
       const body: Record<string, unknown> = { name, is_open: isOpen };
-      if (scheduled && scheduledAt && scheduledDuration) {
-        body.scheduled_at = new Date(scheduledAt).toISOString();
+      if (scheduled && scheduledTime && scheduledDuration) {
+        body.scheduled_at = todayAt(scheduledTime);
         body.scheduled_duration_secs = scheduledDuration;
       }
       const room = await api.post<{ id: string; invite_code: string }>("/rooms", body);
@@ -60,6 +93,8 @@ export default function NewRoomPage() {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  const clockLabel = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
   if (created) return (
     <div className="min-h-screen bg-background flex items-center justify-center px-4">
@@ -86,6 +121,11 @@ export default function NewRoomPage() {
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-10 border-b border-border bg-background/80 backdrop-blur">
         <div className="max-w-xl mx-auto px-4 h-14 flex items-center gap-3">
+          {/* Live clock — top-left */}
+          <div className="flex items-center gap-1.5 text-xs font-mono text-muted-foreground min-w-[80px]">
+            <Clock className="w-3 h-3" />
+            {clockLabel}
+          </div>
           <Link href="/home"><Button variant="ghost" size="icon"><ArrowLeft className="w-4 h-4" /></Button></Link>
           <span className="font-bold text-lg">Create Room</span>
         </div>
@@ -119,12 +159,12 @@ export default function NewRoomPage() {
 
           <div className="flex items-center justify-between p-4 rounded-xl border border-border">
             <div>
-              <p className="font-medium text-sm">Schedule for later</p>
-              <p className="text-xs text-muted-foreground">Set a future start time for your session</p>
+              <p className="font-medium text-sm">Schedule for later today</p>
+              <p className="text-xs text-muted-foreground">Pick a time later today to auto-start</p>
             </div>
             <button
               type="button"
-              onClick={() => { setScheduled(!scheduled); setScheduledAt(""); setScheduledDuration(null); }}
+              onClick={() => { setScheduled(!scheduled); setScheduledTime(""); setScheduledDuration(null); }}
               className={`w-11 h-6 rounded-full transition-colors ${scheduled ? "bg-primary" : "bg-zinc-700"}`}
             >
               <span className={`block w-4 h-4 bg-white rounded-full mx-1 transition-transform ${scheduled ? "translate-x-5" : "translate-x-0"}`} />
@@ -134,14 +174,21 @@ export default function NewRoomPage() {
           {scheduled && (
             <div className="space-y-4 p-4 rounded-xl border border-border bg-card">
               <div className="space-y-2">
-                <label className="text-sm font-medium">Start Date & Time</label>
+                <label className="text-sm font-medium">
+                  Start Time <span className="text-muted-foreground font-normal">(today, {now.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" })})</span>
+                </label>
                 <Input
-                  type="datetime-local"
-                  value={scheduledAt}
-                  onChange={(e) => setScheduledAt(e.target.value)}
-                  min={new Date(Date.now() + 60_000).toISOString().slice(0, 16)}
+                  type="time"
+                  value={scheduledTime}
+                  onChange={(e) => setScheduledTime(e.target.value)}
+                  min={minTime(5)}
+                  max="23:59"
                   required={scheduled}
+                  className="font-mono text-base"
                 />
+                <p className="text-xs text-muted-foreground">
+                  Current time: <span className="font-mono">{now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span> — must be at least 5 minutes from now.
+                </p>
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Session Duration</label>
