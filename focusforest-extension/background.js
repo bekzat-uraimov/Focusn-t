@@ -155,14 +155,11 @@ async function maybeNotify(status, warnings) {
   const now = Date.now();
   if (now - mirrorState.lastNotificationTime < NOTIFICATION_THROTTLE_MS) return;
 
+  mirrorState.lastNotificationTime = now;
+  const title = notificationTitle(status);
+  const reason = warnings[0] || notificationReason(status);
+
   try {
-    const focusedWindow = await chrome.windows.getLastFocused();
-    if (focusedWindow?.focused) return;
-
-    mirrorState.lastNotificationTime = now;
-    const title = notificationTitle(status);
-    const reason = warnings[0] || notificationReason(status);
-
     await chrome.notifications.create({
       type: "basic",
       iconUrl: "icons/icon48.png",

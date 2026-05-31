@@ -304,6 +304,27 @@ export default function Home() {
     };
   }, [focusStatus, sessionState, giveUp]);
 
+  useEffect(() => {
+    const payload = {
+      sessionState,
+      active: sessionState === "running",
+      score: attentionScore,
+      status: focusStatus,
+      warnings,
+      mode: focusMode,
+      duration,
+      elapsed,
+      updatedAt: Date.now(),
+    };
+
+    window.postMessage(
+      { source: "focusnt-webapp", type: "FOCUSNT_SESSION_UPDATE", payload },
+      window.location.origin
+    );
+
+    localStorage.setItem("focusnt_extension_state", JSON.stringify(payload));
+  }, [sessionState, attentionScore, focusStatus, warnings, focusMode, duration, elapsed]);
+
   const progress = duration > 0 ? Math.min(elapsed / duration, 1) : 0;
   const remaining = Math.max(0, duration - elapsed);
   const isActive = sessionState === "running" || sessionState === "completed";
