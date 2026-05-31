@@ -1,0 +1,46 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    platform: linux/arm64/v8
+    environment:
+      POSTGRES_USER: focusforest
+      POSTGRES_PASSWORD: focusforest
+      POSTGRES_DB: focusforest
+    ports:
+      - "5433:5432"   # 5432 is taken by local Postgres; connect externally on 5433
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U focusforest"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  flyway:
+    image: flyway/flyway:10-alpine
+    platform: linux/amd64   # Flyway has no arm64 image; runs via Rosetta on Apple Silicon
+    command: -url=jdbc:postgresql://db:5432/focusforest -user=focusforest -password=focusforest -connectRetries=10 migrate
+    volumes:
+      - ./db/migrations:/flyway/sql
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://focusforest:focusforest@db:5432/focusforest
+      JWT_SECRET: change-me-in-production
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+    volumes:
+      - ./app:/app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  postgres_data:
