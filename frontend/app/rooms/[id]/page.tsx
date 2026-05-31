@@ -75,7 +75,9 @@ export default function RoomPage() {
   const [countdown, setCountdown] = useState(GRACE_SECS);
   const graceRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const { session, elapsed, remaining, progress, startSession, endSession, hydrateSession, fetchCurrentSession } = useSession(roomId);
+  const [cancelConfirm, setCancelConfirm] = useState(false);
+
+  const { session, elapsed, remaining, progress, startSession, endSession, cancelSession, hydrateSession, fetchCurrentSession } = useSession(roomId);
 
   const treeType: TreeType = session ? DURATION_TO_TYPE[session.duration_secs] ?? "common" : "common";
   const treeStage = session ? elapsedToStage(elapsed, session.duration_secs) : "small";
@@ -234,6 +236,20 @@ export default function RoomPage() {
               </p>
               <p className="text-xs text-muted-foreground">Stay in the room — your session will start automatically.</p>
               <TreeSVG treeType={treeType} stage="small" isAlive size={80} />
+
+              {!cancelConfirm ? (
+                <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setCancelConfirm(true)}>
+                  Cancel Session
+                </Button>
+              ) : (
+                <div className="space-y-2 p-3 rounded-lg border border-destructive/40 bg-destructive/5 text-sm max-w-xs mx-auto">
+                  <p className="text-destructive font-medium">This counts as an unfinished session. A dead tree will be added to your forest.</p>
+                  <div className="flex gap-2 justify-center">
+                    <Button size="sm" variant="outline" onClick={() => setCancelConfirm(false)}>Keep it</Button>
+                    <Button size="sm" variant="destructive" onClick={() => { setCancelConfirm(false); cancelSession(); }}>Yes, cancel</Button>
+                  </div>
+                </div>
+              )}
             </div>
           ) : session?.status === "completed" ? (
             <div className="text-center space-y-3">

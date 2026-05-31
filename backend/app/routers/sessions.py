@@ -16,6 +16,8 @@ from app.ws.room_manager import manager
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
+_ACTIVE_STATUSES = ["in_progress", "scheduled"]
+
 
 @router.get("/current", response_model=SessionOut)
 async def get_current_session(
@@ -27,7 +29,7 @@ async def get_current_session(
         select(Session).where(
             Session.user_id == user.id,
             Session.room_id == room_id,
-            Session.status.in_(["in_progress", "scheduled"]),
+            Session.status.in_(_ACTIVE_STATUSES),
         )
     )
     if not session:
@@ -44,11 +46,11 @@ async def start_session(body: SessionCreate, db: AsyncSession = Depends(get_db),
     active = await db.scalar(
         select(Session).where(
             Session.user_id == user.id,
-            Session.status == "in_progress",
+            Session.status.in_(_ACTIVE_STATUSES),
         )
     )
     if active:
-        raise HTTPException(status_code=409, detail="You already have an active session")
+        raise HTTPException(status_code=409, detail="Finish your current session before starting a new one")
 
     session = Session(
         user_id=user.id,
@@ -128,3 +130,41 @@ async def end_session(
         },
     )
     return SessionOut.model_validate(session)
+
+
+@router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def cancel_session(
+    session_id,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Cancel a scheduled session. Counts as abandoned — dead tree added to forest."""
+    session = await db.get(Session, session_id)
+    if not session or session.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status != "scheduled":
+        raise HTTPException(status_code=409, detail="Only scheduled sessions can be cancelled")
+
+    now = datetime.now(timezone.utc)
+    session.status = "abandoned"
+    session.ended_at = now
+
+    tree = await db.scalar(select(Tree).where(Tree.session_id == session.id))
+    if tree:
+        tree.is_alive = False
+        tree.in_forest = True
+        tree.died_at = now
+
+    await db.commit()
+
+    await manager.broadcast(
+        str(session.room_id),
+        {
+            "type": "session_end",
+            "user_id": str(user.id),
+            "status": "abandoned",
+            "tree_alive": False,
+            "tree_type": tree.tree_type if tree else "common",
+            "in_forest": True,
+        },
+    )

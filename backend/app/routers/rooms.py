@@ -1,4 +1,5 @@
 import secrets
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
@@ -14,6 +15,8 @@ from app.schemas.room import MemberOut, RoomCreate, RoomJoin, RoomListItem, Room
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
 
+_ACTIVE_STATUSES = ["in_progress", "scheduled"]
+
 
 @router.get("/explore", response_model=list[RoomListItem])
 async def explore(db: AsyncSession = Depends(get_db), _: User = Depends(current_user)):
@@ -26,19 +29,38 @@ async def explore(db: AsyncSession = Depends(get_db), _: User = Depends(current_
             Room.scheduled_duration_secs,
             func.count(RoomMember.user_id).label("member_count"),
         )
+        .join(Session, (Session.room_id == Room.id) & (Session.status == "scheduled"))
         .join(RoomMember, RoomMember.room_id == Room.id, isouter=True)
         .where(Room.is_open == True)
         .group_by(Room.id)
-        .order_by(Room.created_at.desc())
+        .order_by(Room.scheduled_at.asc())
         .limit(50)
     )
-    return [RoomListItem(**dict(r._mapping)) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r._mapping)
+        if d["scheduled_at"] and d["scheduled_duration_secs"]:
+            d["scheduled_ends_at"] = d["scheduled_at"] + timedelta(seconds=d["scheduled_duration_secs"])
+        else:
+            d["scheduled_ends_at"] = None
+        result.append(RoomListItem(**d))
+    return result
 
 
 @router.post("", response_model=RoomOut, status_code=status.HTTP_201_CREATED)
 async def create_room(body: RoomCreate, db: AsyncSession = Depends(get_db), user: User = Depends(current_user)):
     if body.scheduled_at and not body.scheduled_duration_secs:
         raise HTTPException(status_code=422, detail="scheduled_duration_secs is required when scheduled_at is set")
+
+    if body.scheduled_at and body.scheduled_duration_secs:
+        conflict = await db.scalar(
+            select(Session).where(
+                Session.user_id == user.id,
+                Session.status.in_(_ACTIVE_STATUSES),
+            )
+        )
+        if conflict:
+            raise HTTPException(status_code=409, detail="Finish your current session before scheduling a new one")
 
     room = Room(
         name=body.name,
@@ -91,8 +113,25 @@ async def join_room(room_id, body: RoomJoin, db: AsyncSession = Depends(get_db),
     if room.invite_code != body.invite_code:
         raise HTTPException(status_code=403, detail="Invalid invite code")
 
+    # Block if the room's session has already started
+    room_active = await db.scalar(
+        select(Session).where(Session.room_id == room_id, Session.status == "in_progress")
+    )
+    if room_active:
+        raise HTTPException(status_code=409, detail="This session has already started")
+
+    # Block if the user already has an active or scheduled session
     already = await db.get(RoomMember, (room_id, user.id))
     if not already:
+        user_busy = await db.scalar(
+            select(Session).where(
+                Session.user_id == user.id,
+                Session.status.in_(_ACTIVE_STATUSES),
+            )
+        )
+        if user_busy:
+            raise HTTPException(status_code=409, detail="Finish your current session before joining another")
+
         db.add(RoomMember(room_id=room_id, user_id=user.id))
         await db.commit()
     return await _room_with_members(room_id, db)

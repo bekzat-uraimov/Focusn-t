@@ -43,6 +43,7 @@ class RoomListItem(BaseModel):
     is_open: bool
     scheduled_at: datetime | None
     scheduled_duration_secs: int | None
+    scheduled_ends_at: datetime | None = None
     member_count: int
 
     model_config = {"from_attributes": True}

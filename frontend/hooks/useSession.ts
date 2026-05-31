@@ -55,8 +55,14 @@ export function useSession(roomId: string) {
     setSession((prev) => prev ? { ...prev, status } : null);
   }, [session, elapsed, stopTimer]);
 
+  const cancelSession = useCallback(async () => {
+    if (!session) return;
+    await api.delete(`/sessions/${session.id}`);
+    setSession((prev) => prev ? { ...prev, status: "abandoned" } : null);
+  }, [session]);
+
   const remaining = session ? Math.max(0, session.duration_secs - elapsed) : 0;
   const progress = session ? Math.min(1, elapsed / session.duration_secs) : 0;
 
-  return { session, elapsed, remaining, progress, startSession, endSession, hydrateSession, fetchCurrentSession };
+  return { session, elapsed, remaining, progress, startSession, endSession, cancelSession, hydrateSession, fetchCurrentSession };
 }

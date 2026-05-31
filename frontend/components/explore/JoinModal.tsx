@@ -9,12 +9,14 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onJoin: (code: string) => Promise<void>;
+  externalError?: string;
 }
 
-export default function JoinModal({ roomName, open, onClose, onJoin }: Props) {
+export default function JoinModal({ roomName, open, onClose, onJoin, externalError }: Props) {
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const displayError = externalError || error;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,7 +47,7 @@ export default function JoinModal({ roomName, open, onClose, onJoin }: Props) {
             maxLength={8}
             required
           />
-          {error && <p className="text-destructive text-sm">{error}</p>}
+          {displayError && <p className="text-destructive text-sm">{displayError}</p>}
           <div className="flex gap-2 justify-end">
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
             <Button type="submit" disabled={loading || code.length < 4}>

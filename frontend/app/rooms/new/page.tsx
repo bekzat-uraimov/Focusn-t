@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Copy, Check, Clock } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Copy, Check, Clock } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,10 @@ function todayAt(hhmm: string): string {
   const d = new Date();
   d.setHours(h, m, 0, 0);
   return d.toISOString();
+}
+
+function fmtTime(iso: string) {
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 export default function NewRoomPage() {
@@ -193,6 +197,17 @@ export default function NewRoomPage() {
               <div className="space-y-2">
                 <label className="text-sm font-medium">Session Duration</label>
                 <DurationPicker onSelect={setScheduledDuration} selected={scheduledDuration} />
+              </div>
+
+              {scheduledTime && scheduledDuration && (
+                <p className="text-xs text-muted-foreground font-mono">
+                  Session: {fmtTime(todayAt(scheduledTime))} → {fmtTime(new Date(new Date(todayAt(scheduledTime)).getTime() + scheduledDuration * 1000).toISOString())}
+                </p>
+              )}
+
+              <div className="flex gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/30 text-xs text-yellow-600 dark:text-yellow-400">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>If you cancel this session after creating it, it will count as an unfinished session and a dead tree will be added to your forest.</span>
               </div>
             </div>
           )}
