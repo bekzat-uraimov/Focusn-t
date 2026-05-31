@@ -9,9 +9,11 @@ export type FocusStatus =
 
 export interface FocusState {
   status: FocusStatus;
-  /** seconds remaining in current countdown (null when idle) */
+  /** 0–100. Tree health. Below 70 = questionable, below 50 = distracted. */
+  attentionScore: number;
+  /** human-readable reasons attention score is low */
+  activeWarnings: string[];
   countdownRemaining: number | null;
-  /** seconds remaining in recovery confirmation (null when not recovering) */
   recoveryRemaining: number | null;
   pitch: number;
   yaw: number;
@@ -23,15 +25,16 @@ export interface FocusState {
 export interface ModeThresholds {
   yawLimit: number;
   pitchUpLimit: number;
-  /** adjustable — writing mode exposes this as a slider */
   pitchDownLimit: number;
-  /** seconds in questionable before → distracted */
+  /** score below this → questionable + 20s countdown */
+  questionableScoreThreshold: number;
+  /** score below this → distracted + 10s countdown */
+  distractedScoreThreshold: number;
+  /** score above this needed to start recovery */
+  recoveryScoreThreshold: number;
   questionableCountdownSecs: number;
-  /** seconds in distracted before session fails */
   distractedCountdownSecs: number;
-  /** seconds with no face before → away */
   awayGraceSecs: number;
-  /** seconds of clean focus required to exit questionable/distracted */
   recoveryRequiredSecs: number;
 }
 
@@ -40,6 +43,9 @@ export const MODE_THRESHOLDS: Record<FocusMode, ModeThresholds> = {
     yawLimit: 25,
     pitchUpLimit: 20,
     pitchDownLimit: -25,
+    questionableScoreThreshold: 70,
+    distractedScoreThreshold: 50,
+    recoveryScoreThreshold: 75,
     questionableCountdownSecs: 20,
     distractedCountdownSecs: 10,
     awayGraceSecs: 3,
@@ -48,7 +54,10 @@ export const MODE_THRESHOLDS: Record<FocusMode, ModeThresholds> = {
   writing: {
     yawLimit: 30,
     pitchUpLimit: 20,
-    pitchDownLimit: -40,  // user-adjustable in UI
+    pitchDownLimit: -40,
+    questionableScoreThreshold: 70,
+    distractedScoreThreshold: 50,
+    recoveryScoreThreshold: 75,
     questionableCountdownSecs: 20,
     distractedCountdownSecs: 10,
     awayGraceSecs: 3,

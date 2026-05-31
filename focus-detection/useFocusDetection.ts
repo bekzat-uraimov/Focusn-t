@@ -7,7 +7,7 @@ import {
 } from "@mediapipe/tasks-vision";
 import type { FocusMode, FocusState } from "./types";
 import { MODE_THRESHOLDS } from "./types";
-import { extractHeadPose, isPoseDistracted } from "./headPoseAnalyzer";
+import { extractHeadPose } from "./headPoseAnalyzer";
 import {
   initPhoneDetector,
   detectPhone,
@@ -18,6 +18,11 @@ import {
   detectHandsForVideo,
   disposeHandAnalyzer,
 } from "./handAnalyzer";
+import {
+  computeAttentionScore,
+  extractBlendshapes,
+  resetScorer,
+} from "./attentionScorer";
 import { FocusStateMachine } from "./focusStateMachine";
 
 interface UseFocusDetectionOptions {
@@ -25,11 +30,14 @@ interface UseFocusDetectionOptions {
   videoRef: RefObject<HTMLVideoElement>;
   onSessionFailed?: () => void;
   onStatusChange?: (status: FocusState["status"]) => void;
+  onScoreChange?: (score: number) => void;
   enabled?: boolean;
 }
 
 const IDLE_STATE: FocusState = {
   status: "focused",
+  attentionScore: 100,
+  activeWarnings: [],
   countdownRemaining: null,
   recoveryRemaining: null,
   pitch: 0,
@@ -44,6 +52,7 @@ export function useFocusDetection({
   videoRef,
   onSessionFailed,
   onStatusChange,
+  onScoreChange,
   enabled = true,
 }: UseFocusDetectionOptions): FocusState {
   const [focusState, setFocusState] = useState<FocusState>(IDLE_STATE);
@@ -56,7 +65,6 @@ export function useFocusDetection({
 
   useEffect(() => {
     if (!enabled) return;
-
     let cancelled = false;
 
     async function setup() {
@@ -72,7 +80,7 @@ export function useFocusDetection({
         runningMode: "VIDEO",
         numFaces: 1,
         outputFacialTransformationMatrixes: true,
-        outputFaceBlendshapes: false,
+        outputFaceBlendshapes: true,
       });
 
       if (cancelled) { landmarker.close(); return; }
@@ -80,6 +88,7 @@ export function useFocusDetection({
       faceLandmarkerRef.current = landmarker;
       await Promise.all([initPhoneDetector(), initHandAnalyzer()]);
       stateMachineRef.current.reset();
+      resetScorer();
       failedRef.current = false;
       startLoop();
     }
@@ -113,21 +122,23 @@ export function useFocusDetection({
       const faceResult: FaceLandmarkerResult = landmarker.detectForVideo(video, nowMs);
       const pose = extractHeadPose(faceResult);
 
+      const blendshapeCategories = faceResult.faceBlendshapes?.[0]?.categories ?? [];
+      const blendshapes = extractBlendshapes(blendshapeCategories);
+
       const phoneResult = detectPhone(video, nowMs);
       const hands = detectHandsForVideo(video, nowMs, phoneResult.bbox);
 
-      const poseDistracted = isPoseDistracted(
+      const { score, activeWarnings } = computeAttentionScore(
         pose,
-        thresholds.yawLimit,
-        thresholds.pitchUpLimit,
-        thresholds.pitchDownLimit
+        blendshapes,
+        phoneResult.detected,
+        hands.handInLap,
+        thresholds
       );
 
       const output = stateMachineRef.current.tick({
         facePresent: pose.facePresent,
-        poseDistracted,
-        phoneDetected: phoneResult.detected,
-        handInLap: hands.handInLap,
+        attentionScore: score,
         thresholds,
         nowMs,
       });
@@ -142,8 +153,12 @@ export function useFocusDetection({
         onSessionFailed?.();
       }
 
+      onScoreChange?.(score);
+
       setFocusState({
         status: output.status,
+        attentionScore: score,
+        activeWarnings,
         countdownRemaining: output.countdownRemaining,
         recoveryRemaining: output.recoveryRemaining,
         pitch: pose.pitch,
@@ -157,7 +172,7 @@ export function useFocusDetection({
     }
 
     rafRef.current = requestAnimationFrame(loop);
-  }, [mode, videoRef, onSessionFailed, onStatusChange]);
+  }, [mode, videoRef, onSessionFailed, onStatusChange, onScoreChange]);
 
   return focusState;
 }

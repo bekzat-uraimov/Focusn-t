@@ -1,56 +1,71 @@
 # focus-detection
 
-Runs in the browser. Uses your webcam to detect if you're actually paying attention — not just "is your phone away" but "are you looking at your screen."
+Runs entirely in the browser. Uses your webcam to compute a real-time attention score (0–100) using face pose, eye gaze, blink detection, hand position, and phone detection. Built for FocusForest — a social study app where your virtual tree's health reflects how focused you actually are.
 
-Built for FocusForest: a social study app where your virtual tree dies if you get distracted. This module handles all the computer vision.
+No cloud. No server. Everything runs locally with MediaPipe WASM.
 
 ---
 
 ## How it works
 
-Three MediaPipe models running locally, no server needed:
+Three MediaPipe models run in parallel:
 
-**FaceLandmarker** extracts a 4×4 transformation matrix from your face and converts it to pitch/yaw angles. Pitch tells us if you're looking down, yaw tells us if you've turned away.
+**FaceLandmarker** — extracts a 4×4 transformation matrix → Euler angles (pitch/yaw). Also outputs 52 face blendshapes including eye blink scores and gaze direction (eyeLookOutLeft, eyeLookDownRight, etc).
 
-**HandLandmarker** watches wrist position. If your hand drops below 70% of the frame (into your lap), that's a distraction signal even if your face is still pointed at the screen.
+**HandLandmarker** — watches wrist position. Wrist below 70% of frame height = hand in lap = distraction signal, even if your face is still pointed at the screen.
 
-**ObjectDetector** (EfficientDet) scans for phones every 10 frames. If a phone shows up AND hand landmarks overlap its bounding box, that's a confirmed detection — not just a false positive from a water bottle.
+**ObjectDetector** (EfficientDet) — scans for phones every 10 frames. Phone detection is treated as confirmed only when hand landmarks also overlap the bounding box, reducing false positives.
+
+### Attention Score (0–100)
+
+All signals combine into one smooth number. Slow to drop, fast to recover (exponential moving average).
+
+| Signal | Max penalty |
+|--------|-------------|
+| Yaw > limit (looking sideways) | 40 pts |
+| Pitch out of range (up or down) | 35 pts |
+| Eye blink score > 0.55 | 25 pts |
+| Gaze out (eye looking sideways) | 20 pts |
+| Hand in lap | 20 pts |
+| Phone detected | 40 pts |
 
 ### State machine
 
-```
-focused → questionable [20s countdown]
-              ↓ (if countdown expires)
-          distracted [10s countdown]
-              ↓ (if countdown expires)
-          session failed 🌳💀
+Score thresholds drive state, not binary pose detection:
 
-questionable/distracted → recovering [3s hold]
-              ↓ (if 3s clean)
-          focused ✓
 ```
+score ≥ 75  → focused ✓
+score 50–70 → questionable  [20s countdown visible]
+score < 50  → distracted    [10s countdown — tree dies if it hits 0]
+
+recovery: score ≥ 75 sustained for 3s → back to focused
+```
+
+### Gaze arrow
+
+A live arrow is drawn on the video overlay pointing in the direction your eyes are facing. Green at high score, yellow when questionable, red when distracted. Makes the CV work immediately visible during a demo.
 
 ### Modes
 
-| Mode | Yaw limit | Pitch up | Pitch down | Notes |
-|------|-----------|----------|------------|-------|
-| Coding | ±25° | 20° | -25° | Allows looking at keyboard |
-| Writing | ±30° | 20° | adjustable (-40° default) | Slide to match your desk angle |
+| Mode | Yaw limit | Pitch down | Notes |
+|------|-----------|------------|-------|
+| Coding | ±25° | -25° | Keyboard glances allowed |
+| Writing | ±30° | adjustable (-40° default) | Notebook angle, slider in test UI |
 
 ---
 
 ## Test it locally
 
-No build step needed.
+No build step.
 
 ```bash
 cd focus-detection
 python3 -m http.server 8080
 ```
 
-Open `http://localhost:8080/test.html` in Chrome. Allow webcam access. Models load from CDN — first load takes ~5 seconds.
+Open `http://localhost:8080/test.html` in Chrome. Allow webcam. First load downloads models from CDN (~5s).
 
-The test page shows live pitch/yaw numbers, state transitions in a log, and a slider to tune the writing-mode look-down angle.
+The test UI shows: live score ring, tree health emoji, warning pills, gaze arrow overlay, blendshape values, mode toggle, and writing-mode pitch slider.
 
 ---
 
@@ -58,7 +73,9 @@ The test page shows live pitch/yaw numbers, state transitions in a log, and a sl
 
 **1. Copy the folder**
 
-Drop `focus-detection/` into your Next.js project under `src/lib/focus-detection/`.
+```
+src/lib/focus-detection/
+```
 
 **2. Install the dependency**
 
@@ -74,78 +91,106 @@ import { useFocusDetection } from "@/lib/focus-detection";
 export default function SessionPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  const { status, countdownRemaining, recoveryRemaining } = useFocusDetection({
-    mode: "coding",           // or "writing"
-    videoRef,
-    onSessionFailed: () => {
-      // kill the tree, end session, notify backend
-    },
-    onStatusChange: (newStatus) => {
-      // send to WebSocket room so teammates see your status
-      socket.emit("status_update", { status: newStatus });
-    },
-  });
+  const { status, attentionScore, activeWarnings, countdownRemaining, recoveryRemaining } =
+    useFocusDetection({
+      mode: "coding",            // or "writing"
+      videoRef,
+      onSessionFailed: () => {
+        killTree();              // trigger death animation
+        endSession("failed");
+      },
+      onStatusChange: (status) => {
+        socket.emit("status_update", { status });
+      },
+      onScoreChange: (score) => {
+        // drive tree health animation directly from score
+        setTreeHealth(score);   // 0–100
+      },
+    });
 
   return (
     <>
-      <video ref={videoRef} autoPlay playsInline muted />
-      <StatusBadge status={status} countdown={countdownRemaining} recovery={recoveryRemaining} />
+      {/* video must be in DOM but can be hidden */}
+      <video ref={videoRef} autoPlay playsInline muted style={{ display: "none" }} />
+      <TreeAnimation health={attentionScore} status={status} />
+      {activeWarnings.length > 0 && (
+        <WarningPills warnings={activeWarnings} />
+      )}
+      {countdownRemaining !== null && (
+        <Countdown seconds={countdownRemaining} status={status} />
+      )}
     </>
   );
 }
 ```
 
-**4. MediaPipe WASM headers (Next.js config)**
+**4. `attentionScore` → tree health**
 
-MediaPipe needs cross-origin isolation for the WASM threads. Add this to `next.config.js`:
+Map score directly to your tree animation. Suggested breakpoints:
+
+```ts
+score >= 80  → 🌳 fully grown, green
+score 65–79  → 🌿 slightly wilted
+score 50–64  → 🍂 browning, questionable state
+score 25–49  → 🪵 dying, distracted countdown running
+score < 25   → 💀 critical — tree about to die
+```
+
+**5. `activeWarnings` → UI hints**
+
+Array of strings telling the user *why* their score is dropping. Show as pills or a toast:
+
+```ts
+// possible values:
+"looking left" | "looking right" | "looking up" | "looking down"
+"eyes closing" | "eyes looking away" | "eyes looking down"
+"phone detected" | "hand in lap" | "face not visible"
+```
+
+**6. Next.js WASM headers**
+
+MediaPipe needs cross-origin isolation. Add to `next.config.js`:
 
 ```js
 async headers() {
-  return [
-    {
-      source: "/(.*)",
-      headers: [
-        { key: "Cross-Origin-Opener-Policy",   value: "same-origin" },
-        { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
-      ],
-    },
-  ];
+  return [{
+    source: "/(.*)",
+    headers: [
+      { key: "Cross-Origin-Opener-Policy",   value: "same-origin" },
+      { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
+    ],
+  }];
 },
 ```
 
-**5. Disable SSR for the hook**
+**7. Disable SSR**
 
-MediaPipe uses browser APIs — it can't run on the server.
+MediaPipe uses browser APIs — can't run server-side.
 
 ```tsx
-import dynamic from "next/dynamic";
-
-const FocusSession = dynamic(() => import("@/components/FocusSession"), {
-  ssr: false,
-});
+const FocusSession = dynamic(() => import("@/components/FocusSession"), { ssr: false });
 ```
 
 ---
 
 ## Integrating with the backend (FastAPI + WebSockets)
 
-The detection module fires `onStatusChange` every time state changes. Send that to your WebSocket room so the backend can broadcast to other users.
-
-**Frontend → Backend (send on every status change)**
+**What to send on every status change:**
 
 ```ts
 onStatusChange: (status) => {
   socket.send(JSON.stringify({
-    type: "focus_status",
-    user_id: session.userId,
-    room_id: roomId,
-    status,           // "focused" | "questionable" | "distracted" | "away" | "recovering"
+    type:      "focus_status",
+    user_id:   session.userId,
+    room_id:   roomId,
+    status,                    // "focused" | "questionable" | "distracted" | "away" | "recovering"
+    score:     attentionScore, // 0–100
     timestamp: Date.now(),
   }));
 }
 ```
 
-**Backend (FastAPI WebSocket handler)**
+**FastAPI WebSocket handler:**
 
 ```python
 @app.websocket("/ws/{room_id}")
@@ -157,33 +202,43 @@ async def room_socket(websocket: WebSocket, room_id: str):
             if data["type"] == "focus_status":
                 # broadcast to everyone else in the room
                 await manager.broadcast(room_id, data, exclude=websocket)
-                # optionally log to DB for session stats
+                # log to DB for session stats + leaderboards
                 await db.log_focus_event(data)
     except WebSocketDisconnect:
         manager.disconnect(room_id, websocket)
 ```
 
-**What the backend needs to store per session:**
+**Session model (what to store in Postgres):**
 
-```
-session_id
-user_id
-room_id
-started_at
-ended_at
-result: "completed" | "failed"
-distraction_count
-total_distracted_seconds
+```python
+class FocusSession(Base):
+    id              = Column(UUID)
+    user_id         = Column(UUID, ForeignKey("users.id"))
+    room_id         = Column(UUID, ForeignKey("rooms.id"))
+    mode            = Column(String)          # "coding" | "writing"
+    started_at      = Column(DateTime)
+    ended_at        = Column(DateTime)
+    result          = Column(String)          # "completed" | "failed"
+    avg_score       = Column(Float)           # average attention score
+    min_score       = Column(Float)
+    distraction_count = Column(Integer)
+    total_distracted_secs = Column(Integer)
 ```
 
-`onSessionFailed` fires once when the tree dies — use that to mark the session as failed and tell the backend:
+**Session failed event (tree died):**
 
 ```ts
 onSessionFailed: async () => {
   await fetch(`/api/sessions/${sessionId}/fail`, { method: "POST" });
-  socket.send(JSON.stringify({ type: "session_failed", user_id: session.userId }));
+  socket.send(JSON.stringify({
+    type:    "session_failed",
+    user_id: session.userId,
+    room_id: roomId,
+  }));
 }
 ```
+
+The backend broadcasts `session_failed` → other room members see `John 💀 Failed` in the room panel.
 
 ---
 
@@ -191,17 +246,18 @@ onSessionFailed: async () => {
 
 ```
 focus-detection/
-  types.ts              — FocusMode, FocusState, thresholds per mode
-  headPoseAnalyzer.ts   — 4×4 matrix → pitch/yaw Euler angles
-  phoneDetector.ts      — ObjectDetector wrapper, returns bbox for hand correlation
-  handAnalyzer.ts       — HandLandmarker, wrist position, hand-in-lap detection
-  focusStateMachine.ts  — pure state machine, no timers or side effects
-  useFocusDetection.ts  — React hook that wires everything + rAF loop
+  types.ts              — FocusMode, FocusState, ModeThresholds
+  headPoseAnalyzer.ts   — 4×4 matrix → pitch/yaw; blendshape extraction
+  attentionScorer.ts    — combines all signals → 0–100 score + activeWarnings[]
+  phoneDetector.ts      — ObjectDetector wrapper, returns normalized bbox
+  handAnalyzer.ts       — HandLandmarker, wrist Y position, lap detection
+  focusStateMachine.ts  — score-threshold state machine, no timers/side-effects
+  useFocusDetection.ts  — React hook: rAF loop, blendshapes, all models wired
   index.ts              — barrel export
-  test.html             — standalone browser test, no build needed
+  test.html             — standalone browser test (no build needed)
 ```
 
 ## Stack
 
 - [@mediapipe/tasks-vision](https://ai.google.dev/edge/mediapipe/solutions/vision/face_landmarker) — FaceLandmarker, HandLandmarker, ObjectDetector
-- Runs 100% in-browser, no cloud, no data leaves the device
+- Runs 100% client-side. No webcam data leaves the browser.
