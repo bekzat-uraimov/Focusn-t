@@ -67,7 +67,10 @@ export default function FocusSession({
           videoRef.current.play();
         }
       })
-      .catch(console.error);
+      .catch((err) => {
+        console.error(err);
+        onSessionFailed();
+      });
     return () => {
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;

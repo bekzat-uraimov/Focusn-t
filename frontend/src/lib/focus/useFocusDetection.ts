@@ -154,10 +154,16 @@ export function useFocusDetection({
 
     function handleVisibility() {
       if (document.visibilityState === "hidden") {
+        // Pause detection when tab is not visible — state machine doesn't tick,
+        // countdowns don't advance, and the session can't auto-fail from tab switches.
         cancelAnimationFrame(rafRef.current);
-        bgInterval = setInterval(loop, 800);
       } else {
         if (bgInterval !== null) { clearInterval(bgInterval); bgInterval = null; }
+        // Give the user a clean slate when they return to the tab.
+        stateMachineRef.current.reset();
+        resetScorer();
+        failedRef.current = false;
+        prevStatusRef.current = "focused";
         rafRef.current = requestAnimationFrame(loop);
       }
     }

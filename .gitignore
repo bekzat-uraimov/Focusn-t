@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Python virtualenv
+backend/venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env.local
+
+# Build output
+frontend/.next/
+frontend/out/
+.next/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Alembic compiled
+backend/alembic/versions/__pycache__/
+
+# Test DB / misc
+*.db
+*.sqlite3

@@ -2,9 +2,16 @@
 
 import { useState, useEffect, useRef, useCallback, Suspense, useMemo } from "react";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
 import Timer from "@/components/Timer";
 import DistractionAlert from "@/components/DistractionAlert";
 import type { FocusMode, FocusState } from "@/lib/focus/types";
+import { useAuth } from "@/lib/auth-context";
+import { api } from "@/lib/api";
+
+const GalaxyModal    = dynamic(() => import("@/components/GalaxyModal"),    { ssr: false });
+const AnalyticsModal = dynamic(() => import("@/components/AnalyticsModal"), { ssr: false });
+const RoomsModal     = dynamic(() => import("@/components/RoomsModal"),     { ssr: false });
 
 const PlanetScene = dynamic(() => import("@/components/PlanetScene"), { ssr: false });
 const FocusSession = dynamic(() => import("@/components/FocusSession"), { ssr: false });
@@ -33,6 +40,9 @@ const WARNING_ICONS: Record<string, string> = {
 };
 
 export default function Home() {
+  const { user, isLoading, logout } = useAuth();
+  const router = useRouter();
+
   const [duration, setDuration] = useState(25 * 60);
   const [elapsed, setElapsed] = useState(0);
   const [sessionState, setSessionState] = useState<SessionState>("idle");
@@ -40,7 +50,6 @@ export default function Home() {
   const [collected, setCollected] = useState(0);
   const [isDark, setIsDark] = useState(true);
   const [focusMode, setFocusMode] = useState<FocusMode>("coding");
-  // Pitch down limit for writing mode (degrees, stored as negative)
   const [pitchDownLimit, setPitchDownLimit] = useState(-40);
 
   const [focusStatus, setFocusStatus] = useState<FocusState["status"]>("focused");
@@ -48,41 +57,83 @@ export default function Home() {
   const [countdown, setCountdown] = useState<number | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
 
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const collectedRef = useRef(0);
+  const [galaxyOpen,    setGalaxyOpen]    = useState(false);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [roomsOpen,     setRoomsOpen]     = useState(false);
+
+  const intervalRef    = useRef<ReturnType<typeof setInterval> | null>(null);
+  const collectedRef   = useRef(0);
   const notificationRef = useRef<Notification | null>(null);
   const awayTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionIdRef   = useRef<string | null>(null);
+  const scoreAccumRef  = useRef<number[]>([]);
 
+  // Auth guard — redirect to sign-in if not logged in
   useEffect(() => {
-    const stored = localStorage.getItem("focusnt_collected");
-    const n = stored ? parseInt(stored, 10) : 0;
-    setCollected(n);
-    collectedRef.current = n;
+    if (!isLoading && !user) router.push("/signin");
+  }, [isLoading, user, router]);
+
+  // Load galaxy count from API
+  useEffect(() => {
+    if (!user) return;
+    api.galaxy.planets().then((data) => {
+      setCollected(data.total_count);
+      collectedRef.current = data.total_count;
+    }).catch(() => {});
+  }, [user]);
+
+  // Mark session abandoned if page closes mid-session
+  useEffect(() => {
+    const handleUnload = () => {
+      const sid = sessionIdRef.current;
+      const token = localStorage.getItem("focusnt_access_token");
+      if (sid && token) {
+        navigator.sendBeacon(
+          `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001"}/sessions/${sid}/abandon`,
+          new Blob([JSON.stringify({})], { type: "application/json" })
+        );
+      }
+    };
+    window.addEventListener("beforeunload", handleUnload);
+    return () => window.removeEventListener("beforeunload", handleUnload);
   }, []);
 
   const clearTick = useCallback(() => {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
   }, []);
 
-  const startSession = useCallback(() => {
+  const startSession = useCallback(async () => {
     clearTick();
     setElapsed(0);
     setSessionState("running");
-    setModelIndex(Math.floor(Math.random() * 4));
+    const idx = Math.floor(Math.random() * 4);
+    setModelIndex(idx);
     setFocusStatus("focused");
     setAttentionScore(100);
     setCountdown(null);
     setWarnings([]);
+    scoreAccumRef.current = [];
     if (typeof Notification !== "undefined" && Notification.permission === "default") {
       Notification.requestPermission();
     }
-  }, [clearTick]);
+    try {
+      const s = await api.sessions.start(focusMode, duration, idx);
+      sessionIdRef.current = s.id;
+    } catch {
+      sessionIdRef.current = null;
+    }
+  }, [clearTick, focusMode, duration]);
 
   const giveUp = useCallback(() => {
     clearTick();
     notificationRef.current?.close();
     notificationRef.current = null;
     setSessionState("failed");
+    const sid = sessionIdRef.current;
+    if (sid) {
+      api.sessions.fail(sid).catch(() => {});
+      sessionIdRef.current = null;
+    }
     setTimeout(() => { setSessionState("idle"); setElapsed(0); }, 2500);
   }, [clearTick]);
 
@@ -100,6 +151,7 @@ export default function Home() {
       setAttentionScore(s.attentionScore);
       setCountdown(s.countdownRemaining);
       setWarnings(s.activeWarnings);
+      scoreAccumRef.current.push(s.attentionScore);
     },
     []
   );
@@ -114,16 +166,57 @@ export default function Home() {
           notificationRef.current?.close();
           notificationRef.current = null;
           setSessionState("completed");
-          const n = collectedRef.current + 1;
-          collectedRef.current = n;
-          setCollected(n);
-          localStorage.setItem("focusnt_collected", String(n));
+          const sid = sessionIdRef.current;
+          sessionIdRef.current = null;
+          if (sid) {
+            const scores = scoreAccumRef.current;
+            const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 100;
+            const min = scores.length ? Math.min(...scores) : 100;
+            api.sessions.complete(sid, {
+              avg_attention_score: avg,
+              min_attention_score: min,
+              distraction_count: 0,
+              total_distracted_secs: 0,
+            }).then((result) => {
+              const n = result.collection_index + 1;
+              collectedRef.current = n;
+              setCollected(n);
+            }).catch(() => {
+              const n = collectedRef.current + 1;
+              collectedRef.current = n;
+              setCollected(n);
+            });
+          } else {
+            const n = collectedRef.current + 1;
+            collectedRef.current = n;
+            setCollected(n);
+          }
         }
         return next;
       });
     }, 1000);
     return clearTick;
   }, [sessionState, duration, clearTick]);
+
+  // Browser notification when session ends
+  useEffect(() => {
+    if (sessionState !== "completed" && sessionState !== "failed") return;
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    notificationRef.current?.close();
+    notificationRef.current = null;
+    const n = new Notification(
+      sessionState === "completed" ? "focusn't — Session complete! 🌍" : "focusn't — Session ended",
+      {
+        body: sessionState === "completed"
+          ? "Great work! A new world joined your galaxy."
+          : "The planet drifted back into the void. Keep going!",
+        icon: "/favicon.ico",
+        tag: "session-end",
+        requireInteraction: false,
+      }
+    );
+    notificationRef.current = n;
+  }, [sessionState]);
 
   // Notification + beep for distracted AND away states
   useEffect(() => {
@@ -178,6 +271,18 @@ export default function Home() {
     }
   }, [focusStatus, sessionState]);
 
+  // Clear away-timeout when tab is hidden so switching to another tab never ends the session.
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === "hidden" && awayTimeoutRef.current) {
+        clearTimeout(awayTimeoutRef.current);
+        awayTimeoutRef.current = null;
+      }
+    };
+    document.addEventListener("visibilitychange", onHide);
+    return () => document.removeEventListener("visibilitychange", onHide);
+  }, []);
+
   // Auto-fail session after 30s of "away" (face not visible)
   useEffect(() => {
     if (sessionState !== "running" || focusStatus !== "away") {
@@ -214,6 +319,15 @@ export default function Home() {
     () => focusMode === "writing" ? { pitchDownLimit } : undefined,
     [focusMode, pitchDownLimit]
   );
+
+  // Loading guard while checking auth
+  if (isLoading || !user) {
+    return (
+      <main style={{ width: "100vw", height: "100vh", background: "#03030a", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#818cf8", boxShadow: "0 0 16px #818cf8", animation: "pulse-dot 1s ease-in-out infinite" }} />
+      </main>
+    );
+  }
 
   const vignetteRgb =
     focusStatus === "distracted" ? "220,38,38" :
@@ -327,9 +441,38 @@ export default function Home() {
             }}>
               {isDark ? "☀ Day" : "☽ Night"}
             </button>
-            <div style={{ display: "flex", alignItems: "center", gap: "7px", color: textFaint, fontSize: "13px" }}>
+            <button onClick={() => setGalaxyOpen(true)} style={{
+              display: "flex", alignItems: "center", gap: "7px",
+              background: "transparent", border: "none", cursor: "pointer",
+              color: textFaint, fontSize: "13px", padding: "4px 8px",
+              borderRadius: 10, transition: "color 0.2s",
+            }}>
               <span style={{ width: "6px", height: "6px", borderRadius: "50%", display: "inline-block", background: collected > 0 ? "#818cf8" : t("rgba(255,255,255,0.15)","rgba(0,0,0,0.15)"), boxShadow: collected > 0 ? "0 0 8px #818cf8" : "none" }} />
               {collected} {collected === 1 ? "world" : "worlds"}
+            </button>
+            {sessionState === "idle" && (
+              <>
+                <button onClick={() => setAnalyticsOpen(true)} style={{
+                  background: t("rgba(255,255,255,0.07)","rgba(0,0,0,0.07)"),
+                  border: `1px solid ${t("rgba(255,255,255,0.12)","rgba(0,0,0,0.1)")}`,
+                  borderRadius: "20px", padding: "5px 14px", cursor: "pointer",
+                  color: textMid, fontSize: "13px", fontWeight: 500, transition: "all 0.2s",
+                }}>Stats</button>
+                <button onClick={() => setRoomsOpen(true)} style={{
+                  background: t("rgba(255,255,255,0.07)","rgba(0,0,0,0.07)"),
+                  border: `1px solid ${t("rgba(255,255,255,0.12)","rgba(0,0,0,0.1)")}`,
+                  borderRadius: "20px", padding: "5px 14px", cursor: "pointer",
+                  color: textMid, fontSize: "13px", fontWeight: 500, transition: "all 0.2s",
+                }}>Rooms</button>
+              </>
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ color: textFaint, fontSize: "12px" }}>{user.username}</span>
+              <button onClick={logout} style={{
+                background: "transparent", border: `1px solid ${t("rgba(255,255,255,0.08)","rgba(0,0,0,0.08)")}`,
+                borderRadius: "20px", padding: "4px 12px", cursor: "pointer",
+                color: textFaint, fontSize: "12px", transition: "all 0.2s",
+              }}>Sign out</button>
             </div>
           </div>
         </div>
@@ -484,10 +627,21 @@ export default function Home() {
         )}
 
         {/* ── Galaxy hint — above timer ── */}
-        <div style={{ position: "absolute", right: "32px", bottom: `${32 + 260 + 16}px`, color: t("rgba(255,255,255,0.13)","rgba(0,0,0,0.18)"), fontSize: "11px", letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 500, pointerEvents: "none" }}>
+        <button onClick={() => setGalaxyOpen(true)} style={{
+          position: "absolute", right: "32px", bottom: `${32 + 260 + 16}px`,
+          color: t("rgba(255,255,255,0.18)","rgba(0,0,0,0.22)"), fontSize: "11px",
+          letterSpacing: "0.12em", textTransform: "uppercase", fontWeight: 500,
+          background: "transparent", border: "none", cursor: "pointer",
+          transition: "color 0.2s", pointerEvents: "auto",
+        }}>
           your galaxy →
-        </div>
+        </button>
       </div>
+
+      {/* ── Modals ── */}
+      <GalaxyModal    isOpen={galaxyOpen}    onClose={() => setGalaxyOpen(false)}    isDark={isDark} />
+      <AnalyticsModal isOpen={analyticsOpen} onClose={() => setAnalyticsOpen(false)} isDark={isDark} />
+      <RoomsModal     isOpen={roomsOpen}     onClose={() => setRoomsOpen(false)}     isDark={isDark} />
     </main>
   );
 }
